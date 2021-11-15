@@ -1,21 +1,22 @@
-# Rust async 简介
+# Introduction to Rust async
 
-在讲 Tokio 之前，不得不先讲一下 Rust 的异步编程，因为和很多语言不太一样。
+Before we talk about Tokio, we have to talk about asynchronous programming in Rust, because it is different from many languages.
 
-*对于 Rust Async 熟悉的可以跳过这章*
+If you are familiar with Rust Async, you can skip this chapter.
 
-对于 Erlang/Go/Nodejs 等语言，异步 runtime 都是内置于语言本身，开箱即用。但 Rust 作为一门系统级语言，并不想局限于一种实现，于是另辟蹊径，提供了 Future/async/await 等基本功能，实现了类似于 Nodejs Promise 的 task ，但把调度和运行 future 交给第三方实现，如 [Tokio](https://github.com/tokio-rs/tokio)、[async-std](https://github.com/async-rs/async-std)。例如下图，左边是 Rust 语言提供的基本功能，驱动了 task 的执行，而右边是第三方 runtime 需要实现的调度机制。
+For languages like Erlang/Go/Nodejs, asynchronous runtime is built into the language itself, right out of the box. But Rust, as a system-level language, doesn't want to be limited to one implementation, so it goes the other way and provides basic features like Future/async/await, implementing a task similar to Nodejs Promise, but leaving the scheduling and running future to third-party implementations like Tokio](https://github.com/tokio-rs/tokio), [async-std](https://github.com/async-rs/async-std), etc. For example, in the figure below, on the left is the basic functionality provided by the Rust language that drives the execution of the task, while the right is the scheduling mechanism that the third-party runtime needs to implement.
 
 ![](./assets/01_rust_overview.png)
 [https://excalidraw.com/#json=5287000177377280,_EjA-elJg02sgC71T8uXLQ](https://excalidraw.com/#json=5287000177377280,_EjA-elJg02sgC71T8uXLQ)
 
+
 ## Future, async, await
 
-`Future` 是 Rust 的一个 trait（类似于 interface），表示一个异步任务（task），是"零成本"(zero-cost abstraction)的轻量级线程（类似 promise），会被交给 runtime 调度和执行。`Future` trait 需要实现 `poll` 这个方法，在 `poll`  中判断这个任务是否执行完，如果执行完（比如 IO 数据准备好），就返回 `Ready`，否则返回 `Pending`。
+`Future` is a Rust trait (similar to interface) that represents an asynchronous task, a zero-cost abstraction, a lightweight thread (similar to promise) that is scheduled and executed by the runtime. The `Future` trait needs to implement the `poll` method, determines if the task is finished, and returns `Ready` if it is finished (e.g. IO data ready), otherwise it returns `Pending`.
 
-我们的代码不会直接调用 poll，而是通过 Rust 的关键字  `.await` 来执行这个 future，`await` 会被 Rust 在编译时生成代码来调用 `poll`，如果返回 `Pending` 则被 runtime 挂起（比如重新放到任务队列中）。当有 event 产生时，挂起的 future 会被唤醒，Rust 会再次调用 future 的 `poll`，如果此时返回 `Ready` 就执行完成。
+Our code does not call poll directly, but executes the future with Rust's keyword `.await`. `await` will be compiled by Rust to generate code to call `poll`, and if it returns `Pending`, it will be hung by runtime (e.g., put back in the task queue). When an event is generated, the hung future will be woken up and Rust will call `poll` on the future again, and if it returns `Ready`, execution is complete.
 
-除了直接实现 Future trait 以外，还可以通过 `async` 把一个 function 或者一个代码 block 转变为一个 Future。在 `async` 中可以调用其他 future 的 `.await` 来等待子 future 变成 Ready 状态。
+In addition to implementing the Future trait directly, a function or a block of code can be turned into a Future via an `async`, where the `.await` of another future can be called to wait for the child future to become `Ready`.
 
 ```rust
 struct HelloFuture { ready: bool, waker: ... }
@@ -44,9 +45,9 @@ fn main() {
 }
 ```
 
-例如上边这段代码，`HelloFuture` 是一个通过实现 `Future` trait 实现的 Future， `hello_world` 是 `async` 函数变成的 Future，并被传入 runtime 来执行（这里 `runtime::spawn` 只是示例）。`hello_world` 中又调用了 `HelloFuture.await`，因为 ready 是 false，所以 `hello_world` 会被挂起，直到 HelloFuture 被唤醒。
+For example, in the above code, `HelloFuture` is a `Future` implemented by implementing the `Future` trait, `hello_world` is a Future turned into an `async` function and is passed into the runtime for execution (here `runtime::spawn` is just an example). `hello_world` calls `HelloFuture.await` again, because ready is false, so `hello_world` will be hung until HelloFuture is awakened.
 
-上述的这种嵌套的 futures 可以组成一个 Future 树，一般叶子节点都是由 runtime（如 Tokio） 自己通过实现 Future trait 来实现的，如 io、tcp、time 等操作。非叶子节点则由库代码或用户通过 `async` 调用不同的子 future 实现的。root future 会被提交给 runtime 来执行，runtime 通过调度器来调用 root future，然后 root 再一级级往下调用 poll。
+The above nested futures can form a Future tree, and generally the leaf nodes are implemented by the runtime (e.g. Tokio) itself by implementing Future traits, such as io, tcp, time, etc. The non-leaf nodes are implemented by the library code. The non-leaf nodes are implemented by the library code or by the user through `async` calls to different child futures. root future is submitted to the runtime for execution, runtime calls root future through the scheduler, and then root calls poll down the hierarchy.
 
 ![](./assets/01_future_tree.png)
 [https://excalidraw.com/#json=6697978081312768,u9VYjoGonibMqcPX8VWeGg](https://excalidraw.com/#json=6697978081312768,u9VYjoGonibMqcPX8VWeGg)
@@ -54,6 +55,10 @@ fn main() {
 ## 生成状态机和 stackless
 
 Future 会被 Rust 编译为一个状态机的代码，当执行到子 Future 的 `await` 的时候，会进入下一个状态，所以下次执行时可以从 `await` 的地方继续执行。因此 Rust 不需要预先为 future 分配独立的栈（stackless），是 zero-cost abstraction。但也因为如此，future 只能在 `await` 的地方调度走，是 cooperation scheduling（协同调度），而且很难做抢占式调度，这点和 stackful 的 Go/Erlang 不一样。状态机的示意伪代码如下：
+
+## Generating stackless state machines
+
+Future is compiled by Rust as code into a state machine, and when the execution reaches the `await` of a child Future, it goes to the next state, so the next execution can continue from the `await`. So Rust does not need to pre-allocate a separate stack for future (stackless), it is a zero-cost abstraction. However, because of this, a future can only be scheduled at `await`, which is cooperative scheduling, and it is difficult to do preemptive scheduling, which is different from stackful Go/Erlang. The schematic pseudo-code for the state machine is as follows.
 
 ```rust
 use std::{future::Future, task::Poll};
@@ -97,15 +102,13 @@ impl Future for HelloWorldState {
 }
 ```
 
-在这段示意代码中， `async fn hello_world()` 被变成了一个 enum 的状态和它的 poll 方法，初始状态为 `Start`，第一次执行 `poll` 时会执行 `.await` 之前的代码，并改变当前状态为 `Await1` 。下次再被 `poll` 时，因为状态是 `Await1`，会进入第二个分支并执行 `hello.poll()`，如果 `hello` 还没完成，会返回 `Pending`，否则会执行 `.await` 之后的代码。
+In this schematic doe, `async fn hello_world()` is turned into a state machine with an `enum` and its poll method. The initial state is `Start` and the first time `poll` is executed the code before `.await` is executed and the state changes to `Await1`. The next time it is polled, since the state is `Await1`, it will enter the second branch and execute `hello.poll()`, returning `Pending` if `hello` is not finished, otherwise it will execute the code after `.await`.
 
-可以看到，Rust 主要提供了这些基础的工具和代码生成，而如何管理 OS 线程、如何调度任务、如何 poll events、如何唤醒 pending 的 tasks 等等，都需要 runtime 自己实现，可以实现为一个类似于 Erlang/Go 的 N:M 模型，也可以实现 Nodejs 这样单线程事件驱动的模型。
+As you can see, Rust mainly provides these basic tools and code generation, while how to manage OS threads, how to schedule tasks, how to poll events, how to wake up pending tasks, etc., all need to be implemented by runtime itself, which can be implemented as an N:M model similar to Erlang/Go, or as a single-threaded event-driven model like Nodejs.
 
-需要注意的是，如果使用了 async，很多标准库中的同步阻塞的库就不应该直接使用，否则会阻塞其他 task 的调度和运行。比如执行 `std::println!` 或者执行纯 CPU 计算的时候，因为没有 `.await` 这样的 yield point，所以无法被调度走，当前 OS 线程必须等到这个操作完成，执行到下一个 yield point 后，才能执行其他 task，这段时间内这个 OS 线程中的任务都被阻塞了。
+Usually the runtime will encapsulate some common modules, such as IO/TCP/timer, etc. Just be careful to use the runtime encapsulated ones instead of the standard library ones when writing code. A runtime like Tokio also provides a dedicated thread pool (similar to Erlang's dirty scheduler) for running such blocking operations, thus not affecting the execution of reactor or other tasks.
 
-一般 runtime 会封装好一些常用的模块，如 IO/TCP/timer 等等，写代码时注意使用 runtime 封装的而不用标准库的就行。像 Tokio 这样的 runtime 还提供了专门用来运行这类阻塞操作的专用线程池（类似于 Erlang 的 dirty scheduler），从而不影响 reactor 或者其他 task 的执行。
-
-### 参考
+### Reference
 
 * [https://rust-lang.github.io/async-book/](https://rust-lang.github.io/async-book/)
 * [https://www.infoq.com/presentations/rust-async-await/](https://www.infoq.com/presentations/rust-async-await/)
